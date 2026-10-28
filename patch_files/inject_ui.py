@@ -1,9 +1,9 @@
 import os
 
 def patch_cmake():
-    path = 'main/CMakeLists.txt'
+    path = 'xiaozhi-esp32/main/CMakeLists.txt'
     if not os.path.exists(path):
-        print("CMakeLists.txt not found!")
+        print(f"{path} not found!")
         return
     with open(path, 'r') as f:
         text = f.read()
@@ -14,9 +14,9 @@ def patch_cmake():
         print("Patched CMakeLists.txt")
 
 def patch_cpp():
-    path = 'main/display/lvgl_display/lvgl_display.cc'
+    path = 'xiaozhi-esp32/main/display/lvgl_display/lvgl_display.cc'
     if not os.path.exists(path):
-        print("lvgl_display.cc not found!")
+        print(f"{path} not found!")
         return
     with open(path, 'r') as f:
         text = f.read()
@@ -27,12 +27,10 @@ def patch_cpp():
         modified = True
         
     if 'modern_ui_init()' not in text:
-        # Tìm chỗ có thân hàm LvglDisplay constructor
         if 'LvglDisplay::LvglDisplay() {' in text:
             text = text.replace('LvglDisplay::LvglDisplay() {', 'LvglDisplay::LvglDisplay() {\n    modern_ui_init();')
             modified = True
         elif 'LvglDisplay::LvglDisplay()' in text:
-            # Nếu constructor viết kiểu khác, tìm dấu { tiếp theo
             idx = text.find('LvglDisplay::LvglDisplay()')
             if idx != -1:
                 brace_idx = text.find('{', idx)
