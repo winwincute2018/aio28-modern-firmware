@@ -26,8 +26,7 @@ jobs:
         run: python patch_files/inject_ui.py
 
       - name: Configure and Build for custom_board_28aio
-        working-directory: xiaozhi-esp32
-        run: |
+       run: |
           . $IDF_PATH/export.sh
           
           # Fix lỗi: The selected board does not define BOARD_DIR
