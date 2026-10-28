@@ -3,20 +3,20 @@ name: Build Firmware aio28-modern
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:          # cho phep chay thu cong tu GitHub UI
+  workflow_dispatch:
     inputs:
       server_url:
-        description: 'URL máy chủ WebSocket (vd: ws://192.168.1.100:8080)'
+        description: 'URL máy chủ WebSocket (vd: ws://192.168.1.100:8080/xiaozhi/v2/)'
         required: false
         default: ''
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
-      # ── 1. Lay ma nguon xiaozhi-esp32 ──────────────────────────────────
+      # ── 1. Lấy mã nguồn xiaozhi-esp32 (branch main = IDF 6.x) ──────────
       - name: Checkout xiaozhi-esp32
         uses: actions/checkout@v4
         with:
@@ -25,103 +25,183 @@ jobs:
           submodules: recursive
           path: xiaozhi-esp32
 
-      # ── 2. Lay board tuy chinh cua ban ─────────────────────────────────
-      - name: Checkout board aio28-modern
+      # ── 2. Lấy board tùy biến của bạn ───────────────────────────────────
+      - name: Checkout my board
         uses: actions/checkout@v4
         with:
           path: my-board
 
-      # ── 3. Copy board vao dung vi tri ──────────────────────────────────
+      # ── 3. Copy board vào đúng vị trí ───────────────────────────────────
       - name: Copy board files
         run: |
           cp -r my-board/main/boards/aio28-modern \
                 xiaozhi-esp32/main/boards/aio28-modern
+          echo "Board files copied:"
+          ls xiaozhi-esp32/main/boards/aio28-modern/
 
-      # ── 4. Patch Kconfig: dang ky board moi ────────────────────────────
+      # ── 4. Patch Kconfig — đăng ký board mới ────────────────────────────
       - name: Patch Kconfig.projbuild
         working-directory: xiaozhi-esp32
         run: |
-          # Chen vao sau dong "choice BOARD_TYPE"
-          sed -i '/^choice BOARD_TYPE$/a\
-          \
-              config BOARD_TYPE_AIO28_MODERN\
-                  bool "AIDEEPEN ES3C28P 2.8 Modern UI"\
-                  depends on IDF_TARGET_ESP32S3' \
-            main/Kconfig.projbuild
+          # Chèn entry board sau dòng "choice BOARD_TYPE"
+          python3 - <<'PYEOF'
+          import re, pathlib
+          f = pathlib.Path("main/Kconfig.projbuild")
+          txt = f.read_text()
+          entry = """
+              config BOARD_TYPE_AIO28_MODERN
+                  bool "AIDEEPEN ES3C28P 2.8\\" Modern UI (aio28)"
+                  depends on IDF_TARGET_ESP32S3
+          """
+          # Chèn trước entry đầu tiên bên trong choice BOARD_TYPE
+          txt = re.sub(
+              r'(choice BOARD_TYPE\b.*?\n)',
+              r'\1' + entry,
+              txt, count=1, flags=re.DOTALL
+          )
+          f.write_text(txt)
+          print("Kconfig patched OK")
+          PYEOF
 
-      # ── 5. Patch CMakeLists.txt: them branch board moi ─────────────────
+      # ── 5. Patch CMakeLists.txt — thêm branch board mới ─────────────────
       - name: Patch CMakeLists.txt
         working-directory: xiaozhi-esp32
         run: |
-          # Chen truoc dong "else()" cuoi cung trong khoi board
-          sed -i '/^else()$/i\
-          elseif(CONFIG_BOARD_TYPE_AIO28_MODERN)\
-              set(BOARD_DIR "aio28-modern")\
-              set(BUILTIN_TEXT_FONT font_puhui_basic_14_1)\
-              set(BUILTIN_ICON_FONT font_awesome_14_1)\
-              set(DEFAULT_EMOJI_COLLECTION twemoji_32)' \
-            main/CMakeLists.txt
+          python3 - <<'PYEOF'
+          import pathlib
+          f = pathlib.Path("main/CMakeLists.txt")
+          txt = f.read_text()
+          snippet = """elseif(CONFIG_BOARD_TYPE_AIO28_MODERN)
+              set(BOARD_DIR "aio28-modern")
+              set(BUILTIN_TEXT_FONT font_puhui_basic_14_1)
+              set(BUILTIN_ICON_FONT font_awesome_14_1)
+              set(DEFAULT_EMOJI_COLLECTION twemoji_32)
+          """
+          # Chèn trước dòng "else()" cuối cùng trong khối board
+          idx = txt.rfind("\nelse()")
+          if idx == -1:
+              raise RuntimeError("Không tìm thấy else() trong CMakeLists.txt")
+          txt = txt[:idx] + "\n" + snippet + txt[idx:]
+          f.write_text(txt)
+          print("CMakeLists.txt patched OK")
+          PYEOF
 
-      # ── 6. Dien URL may chu neu duoc truyen vao ─────────────────────────
+      # ── 6. Ghi URL máy chủ tùy chỉnh (nếu có) ──────────────────────────
       - name: Set custom server URL
         if: ${{ github.event.inputs.server_url != '' }}
         working-directory: xiaozhi-esp32
         run: |
-          echo "CONFIG_WEBSOCKET_URL=\"${{ github.event.inputs.server_url }}\"" \
+          echo 'CONFIG_WEBSOCKET_URL="${{ github.event.inputs.server_url }}"' \
             >> sdkconfig.defaults
+          echo "Server URL set to: ${{ github.event.inputs.server_url }}"
 
-      # ── 7. Cai ESP-IDF v5.5 (cache de lan sau nhanh hon) ───────────────
+      # ── 7. Cache ESP-IDF v6.0.2 ─────────────────────────────────────────
       - name: Cache ESP-IDF
+        id: cache-idf
         uses: actions/cache@v4
         with:
-          path: ~/esp-idf
-          key: esp-idf-v5.5-${{ runner.os }}
+          path: |
+            ~/esp-idf
+            ~/.espressif
+          key: esp-idf-v6.0.2-${{ runner.os }}-v2
 
-      - name: Install ESP-IDF v5.5
+      - name: Install ESP-IDF v6.0.2
+        if: steps.cache-idf.outputs.cache-hit != 'true'
         run: |
-          if [ ! -f ~/esp-idf/export.sh ]; then
-            git clone --depth 1 --branch v5.5 \
-              --recursive https://github.com/espressif/esp-idf.git ~/esp-idf
-          fi
+          git clone --depth 1 --branch v6.0.2 \
+            https://github.com/espressif/esp-idf.git ~/esp-idf
+          cd ~/esp-idf
+          git submodule update --init --recursive --depth 1
+          ./install.sh esp32s3
+          echo "ESP-IDF v6.0.2 installed"
+
+      - name: Activate ESP-IDF (cache hit)
+        if: steps.cache-idf.outputs.cache-hit == 'true'
+        run: |
           ~/esp-idf/install.sh esp32s3
 
-      # ── 8. Cache managed_components ─────────────────────────────────────
-      - name: Cache IDF components
+      # ── 8. Cache IDF managed components ─────────────────────────────────
+      - name: Cache managed components
         uses: actions/cache@v4
         with:
           path: xiaozhi-esp32/managed_components
-          key: idf-components-${{ hashFiles('xiaozhi-esp32/main/idf_component.yml') }}
+          key: idf-comp-${{ hashFiles('xiaozhi-esp32/main/idf_component.yml') }}-v6
 
-      # ── 9. Build ─────────────────────────────────────────────────────────
+      # ── 9. Build firmware ────────────────────────────────────────────────
       - name: Build firmware
         working-directory: xiaozhi-esp32
         run: |
           source ~/esp-idf/export.sh
-          idf.py set-target esp32s3
-          # Chon board + ngon ngu tieng Viet
-          python scripts/build.py aio28-modern --language vi-VN || \
-          ( \
-            idf.py reconfigure \
-              -DSDKCONFIG_DEFAULTS="sdkconfig.defaults" \
-              -DCONFIG_BOARD_TYPE_AIO28_MODERN=y && \
-            idf.py build \
-          )
 
-      # ── 10. Kiem tra file dau ra ─────────────────────────────────────────
-      - name: Find output binary
+          # Dùng build script chính thức của dự án
+          idf.py set-target esp32s3
+
+          # Bật board mới qua sdkconfig.defaults
+          echo "CONFIG_BOARD_TYPE_AIO28_MODERN=y" >> sdkconfig.defaults
+          echo "CONFIG_IDF_TARGET_ESP32S3=y"       >> sdkconfig.defaults
+          echo "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y" >> sdkconfig.defaults
+
+          idf.py reconfigure
+          idf.py build
+
+          echo ""
+          echo "=== Build thành công! ==="
+          ls -lh build/merged-binary.bin 2>/dev/null && \
+            echo "merged-binary.bin: $(du -sh build/merged-binary.bin | cut -f1)" || \
+            echo "(merged-binary.bin không có — xem các file .bin bên dưới)"
+          ls -lh build/*.bin 2>/dev/null | head -10
+
+      # ── 10. Tạo flash_args tiện nạp sau ─────────────────────────────────
+      - name: Prepare flash package
         working-directory: xiaozhi-esp32
         run: |
-          ls -lh build/merged-binary.bin 2>/dev/null || \
-          ls -lh build/*.bin | head -5
+          mkdir -p flash_pkg
+          cp build/merged-binary.bin flash_pkg/ 2>/dev/null || true
+          cp build/bootloader/bootloader.bin flash_pkg/ 2>/dev/null || true
+          cp build/partition_table/partition-table.bin flash_pkg/ 2>/dev/null || true
+          cp build/flash_args flash_pkg/ 2>/dev/null || true
+          # Tao script nap don gian cho nguoi dung
+          cat > flash_pkg/FLASH_ME.sh <<'FLASHEOF'
+          #!/bin/bash
+          # Nap firmware vao board — thay /dev/ttyUSB0 bang cong thuc te
+          PORT=${1:-/dev/ttyUSB0}
+          echo "Nap firmware vao $PORT ..."
+          esptool.py --chip esp32s3 --port "$PORT" --baud 921600 \
+            write_flash 0x0 merged-binary.bin
+          FLASHEOF
+          cat > flash_pkg/FLASH_ME.bat <<'BATEOF'
+          @echo off
+          REM Nap firmware tren Windows -- thay COM3 bang cong thuc te
+          set PORT=COM3
+          esptool.exe --chip esp32s3 --port %PORT% --baud 921600 ^
+            write_flash 0x0 merged-binary.bin
+          BATEOF
+          echo "Flash package:"
+          ls -lh flash_pkg/
 
-      # ── 11. Upload artifact (tai xuong tu GitHub UI) ─────────────────────
-      - name: Upload firmware
+      # ── 11. Upload artifact ──────────────────────────────────────────────
+      - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: firmware-aio28-modern-${{ github.run_number }}
-          path: |
-            xiaozhi-esp32/build/merged-binary.bin
-            xiaozhi-esp32/build/bootloader/bootloader.bin
-            xiaozhi-esp32/build/partition_table/partition-table.bin
+          name: firmware-aio28-modern-idf6-${{ github.run_number }}
+          path: xiaozhi-esp32/flash_pkg/
           retention-days: 30
           if-no-files-found: error
+
+      # ── 12. Tóm tắt kết quả ─────────────────────────────────────────────
+      - name: Build summary
+        working-directory: xiaozhi-esp32
+        run: |
+          echo "## ✅ Build thành công!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| File | Kích thước |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-----------|" >> $GITHUB_STEP_SUMMARY
+          for f in flash_pkg/*.bin; do
+            echo "| $(basename $f) | $(du -sh $f | cut -f1) |" >> $GITHUB_STEP_SUMMARY
+          done
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Tải firmware:** Tab Actions → Run này → Artifacts → firmware-aio28-modern-idf6-${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "esptool.py --chip esp32s3 --port COM3 write_flash 0x0 merged-binary.bin" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
