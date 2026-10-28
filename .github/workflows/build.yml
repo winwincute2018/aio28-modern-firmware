@@ -18,14 +18,15 @@ jobs:
 
       - name: Setup Modern UI Files
         run: |
-          mkdir -p main/display/lvgl_display/
-          cp patch_files/modern_ui.h main/display/lvgl_display/
-          cp patch_files/modern_ui.cpp main/display/lvgl_display/
+          mkdir -p xiaozhi-esp32/main/display/lvgl_display/
+          cp patch_files/modern_ui.h xiaozhi-esp32/main/display/lvgl_display/
+          cp patch_files/modern_ui.cpp xiaozhi-esp32/main/display/lvgl_display/
           
       - name: Auto-Inject UI Code
         run: python patch_files/inject_ui.py
 
       - name: Configure and Build for custom_board_28aio
+        working-directory: xiaozhi-esp32
         run: |
           . $IDF_PATH/export.sh
           
@@ -48,7 +49,7 @@ jobs:
         with:
           name: firmware-custom_board_28aio-modern-ui
           path: |
-            build/xiaozhi.bin
-            build/bootloader/bootloader.bin
-            build/partition_table/partition-table.bin
-            build/flasher_args.json
+            xiaozhi-esp32/build/xiaozhi.bin
+            xiaozhi-esp32/build/bootloader/bootloader.bin
+            xiaozhi-esp32/build/partition_table/partition-table.bin
+            xiaozhi-esp32/build/flasher_args.json
